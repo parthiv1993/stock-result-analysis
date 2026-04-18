@@ -30,6 +30,8 @@ jobs:
       - name: Run Screener latest results scraper
         run: python src/main.py
         env:
+          SCREENER_EMAIL: ${{ secrets.SCREENER_EMAIL }}
+          SCREENER_PASSWORD: ${{ secrets.SCREENER_PASSWORD }}
           SCREENER_RESULTS_DATE: ${{ env.RUN_DATE }} # or leave unset to use today
 
       - name: Upload metadata artifact
