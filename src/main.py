@@ -34,6 +34,9 @@ def save_html(html: str):
     out.write_text(html, encoding="utf-8")
     return out
 
+def make_result_link(code: str) -> str:
+    return f"https://www.bseindia.com/stock-share-price/stockreach_financials.html?scripcode={code}"
+
 def extract_result_announcements(html: str):
     soup = BeautifulSoup(html, "lxml")
     text = soup.get_text("\n", strip=True)
@@ -70,8 +73,7 @@ def extract_result_announcements(html: str):
         code = m.group(2).strip()
         headline = m.group(3).strip()
 
-        # No reliable direct link yet, so keep result_link blank for now.
-        result_link = ""
+        result_link = make_result_link(code)
 
         key = (company_name, code, headline)
         if key in seen:
