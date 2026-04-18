@@ -32,7 +32,7 @@ jobs:
         env:
           SCREENER_EMAIL: ${{ secrets.SCREENER_EMAIL }}
           SCREENER_PASSWORD: ${{ secrets.SCREENER_PASSWORD }}
-          SCREENER_RESULTS_DATE: ${{ env.RUN_DATE }} # or leave unset to use today
+          
           SCREENER_RESULTS_DATE: ${{ vars.SCREENER_RESULTS_DATE }}
 
       - name: Upload metadata artifact
