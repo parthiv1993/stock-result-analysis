@@ -1,6 +1,7 @@
 from pathlib import Path
 from datetime import datetime, timezone
 from bs4 import BeautifulSoup
+from urllib.parse import urljoin
 import csv
 import requests
 import re
@@ -34,48 +35,60 @@ def save_html(html: str):
     out.write_text(html, encoding="utf-8")
     return out
 
-def make_result_link(code: str) -> str:
-    return f"https://www.bseindia.com/stock-share-price/stockreach_financials.html?scripcode={code}"
+def clean_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text or "").strip()
 
-def extract_result_announcements(html: str):
+def find_nearest_row_text(tag):
+    node = tag
+    for _ in range(8):
+        if node is None:
+            break
+        text = clean_text(node.get_text(" ", strip=True))
+        if text:
+            code_match = re.search(r"\b(\d{6})\b", text)
+            if code_match:
+                return text
+        node = node.parent
+    return ""
+
+def parse_result_links(html: str):
     soup = BeautifulSoup(html, "lxml")
-    text = soup.get_text("\n", strip=True)
-
     rows = []
     seen = set()
 
-    for line in text.splitlines():
-        line = re.sub(r"\s+", " ", line).strip()
-        if not line:
+    for a in soup.find_all("a", href=True):
+        href = a["href"].strip()
+        href_lower = href.lower()
+
+        if not any(token in href_lower for token in ["xbrl", "xbrldetails", "pdf", "attach"]):
             continue
 
-        looks_like_result = any(
-            key in line.lower()
-            for key in [
-                "financial result",
-                "audited financial result",
-                "unaudited financial result",
-                "quarter and year ended",
-                "quarter ended",
-                "year ended",
-                "outcome of the board meeting",
-            ]
-        )
+        full_link = urljoin(BSE_RESULTS_URL, href)
+        context_text = find_nearest_row_text(a)
 
-        if not looks_like_result:
+        if not context_text:
             continue
 
-        m = re.match(r"^(.*?)\s*-\s*(\d{6})\s*-\s*(.*)$", line)
-        if not m:
+        code_match = re.search(r"\b(\d{6})\b", context_text)
+        if not code_match:
             continue
 
-        company_name = m.group(1).strip()
-        code = m.group(2).strip()
-        headline = m.group(3).strip()
+        code = code_match.group(1)
 
-        result_link = make_result_link(code)
+        company_match = re.search(r"\b\d{6}\b\s+(.*?)\s+(MQ|MC|JQ|JC|SQ|SC|DQ|DC|MH|JH|SH|DH|A|U)\b", context_text)
+        if company_match:
+            company_name = clean_text(company_match.group(1))
+        else:
+            parts = re.split(r"\b\d{6}\b", context_text, maxsplit=1)
+            company_name = clean_text(parts[1]) if len(parts) > 1 else ""
 
-        key = (company_name, code, headline)
+            company_name = re.split(r"\b(MQ|MC|JQ|JC|SQ|SC|DQ|DC|MH|JH|SH|DH)\d{4}-\d{4}\b", company_name)[0]
+            company_name = clean_text(company_name)
+
+        if not company_name:
+            continue
+
+        key = (company_name, code, full_link)
         if key in seen:
             continue
         seen.add(key)
@@ -83,7 +96,7 @@ def extract_result_announcements(html: str):
         rows.append({
             "company_name": company_name,
             "code": code,
-            "result_link": result_link,
+            "result_link": full_link,
         })
 
     return rows
@@ -99,7 +112,7 @@ def write_csv(rows):
 def main():
     html = fetch_bse_page()
     html_file = save_html(html)
-    rows = extract_result_announcements(html)
+    rows = parse_result_links(html)
     csv_file = write_csv(rows)
 
     write_run_log(
