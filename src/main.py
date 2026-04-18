@@ -1,7 +1,6 @@
 from pathlib import Path
 from datetime import datetime, timezone
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin
 import csv
 import requests
 import re
@@ -26,91 +25,88 @@ def fetch_bse_page():
         "User-Agent": "Mozilla/5.0",
         "Referer": "https://www.bseindia.com/",
     }
-    session = requests.Session()
-    r = session.get(BSE_RESULTS_URL, headers=headers, timeout=30)
+    r = requests.get(BSE_RESULTS_URL, headers=headers, timeout=30)
     r.raise_for_status()
     return r.text
 
-def save_text(filename: str, content: str):
-    out = META_DIR / filename
-    out.write_text(content, encoding="utf-8")
+def save_html(html: str):
+    out = META_DIR / "bse_results_page.html"
+    out.write_text(html, encoding="utf-8")
     return out
 
-def extract_debug_info(html: str):
+def extract_result_announcements(html: str):
     soup = BeautifulSoup(html, "lxml")
+    text = soup.get_text("\n", strip=True)
 
-    hidden_fields = []
-    for inp in soup.select("input[type='hidden']"):
-        hidden_fields.append({
-            "name": inp.get("name", ""),
-            "id": inp.get("id", ""),
-            "value_prefix": (inp.get("value", "")[:120]),
+    rows = []
+    seen = set()
+
+    for line in text.splitlines():
+        line = re.sub(r"\s+", " ", line).strip()
+        if not line:
+            continue
+
+        looks_like_result = any(
+            key in line.lower()
+            for key in [
+                "financial result",
+                "audited financial result",
+                "unaudited financial result",
+                "quarter and year ended",
+                "quarter ended",
+                "year ended",
+                "outcome of the board meeting",
+            ]
+        )
+
+        if not looks_like_result:
+            continue
+
+        m = re.match(r"^(.*?)\s*-\s*(\d{6})\s*-\s*(.*)$", line)
+        if not m:
+            continue
+
+        company_name = m.group(1).strip()
+        code = m.group(2).strip()
+        headline = m.group(3).strip()
+
+        # No reliable direct link yet, so keep result_link blank for now.
+        result_link = ""
+
+        key = (company_name, code, headline)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        rows.append({
+            "company_name": company_name,
+            "code": code,
+            "result_link": result_link,
         })
 
-    scripts = []
-    for s in soup.find_all("script", src=True):
-        scripts.append(urljoin(BSE_RESULTS_URL, s["src"]))
+    return rows
 
-    candidates = set()
-
-    # URLs embedded in HTML / JS
-    for match in re.findall(r"""https?://[^\s"'<>]+|/[A-Za-z0-9_\-./?=&%]+""", html):
-        if any(token in match.lower() for token in [
-            "results", "xbrl", "announcement", "attach", "corp", "ajax", "details", ".asmx", ".ashx", ".svc"
-        ]):
-            candidates.add(urljoin(BSE_RESULTS_URL, match))
-
-    # Common ASP.NET postback clues
-    for match in re.findall(r"__doPostBack\('([^']+)'", html):
-        candidates.add(f"POSTBACK::{match}")
-
-    return hidden_fields, scripts, sorted(candidates)
-
-def write_hidden_fields_csv(hidden_fields):
-    out = META_DIR / "bse_hidden_fields.csv"
+def write_csv(rows):
+    out = META_DIR / "bse_results.csv"
     with out.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["name", "id", "value_prefix"])
+        writer = csv.DictWriter(f, fieldnames=["company_name", "code", "result_link"])
         writer.writeheader()
-        writer.writerows(hidden_fields)
-    return out
-
-def write_scripts_csv(scripts):
-    out = META_DIR / "bse_script_urls.csv"
-    with out.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(["script_url"])
-        for s in scripts:
-            writer.writerow([s])
-    return out
-
-def write_candidates_csv(candidates):
-    out = META_DIR / "bse_candidate_endpoints.csv"
-    with out.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(["candidate"])
-        for c in candidates:
-            writer.writerow([c])
+        writer.writerows(rows)
     return out
 
 def main():
     html = fetch_bse_page()
-    html_file = save_text("bse_results_page.html", html)
-
-    hidden_fields, scripts, candidates = extract_debug_info(html)
-
-    hidden_csv = write_hidden_fields_csv(hidden_fields)
-    scripts_csv = write_scripts_csv(scripts)
-    candidates_csv = write_candidates_csv(candidates)
+    html_file = save_html(html)
+    rows = extract_result_announcements(html)
+    csv_file = write_csv(rows)
 
     write_run_log(
         "ok",
-        f"fetched_bse_results_page bytes={len(html)} html={html_file.name} hidden={len(hidden_fields)} scripts={len(scripts)} candidates={len(candidates)}"
+        f"fetched_bse_results_page bytes={len(html)} html={html_file.name} csv={csv_file.name} rows={len(rows)}"
     )
 
     print(f"Saved {html_file}")
-    print(f"Saved {hidden_csv}")
-    print(f"Saved {scripts_csv}")
-    print(f"Saved {candidates_csv}")
+    print(f"Saved {csv_file} with {len(rows)} rows")
 
 if __name__ == "__main__":
     main()
