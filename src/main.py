@@ -1,16 +1,18 @@
 from pathlib import Path
-from datetime import datetime, timezone
-from bs4 import BeautifulSoup
+from datetime import datetime, date
 from urllib.parse import urljoin
+from bs4 import BeautifulSoup
 import csv
-import requests
+import os
 import re
+import requests
 
 BASE = Path(__file__).resolve().parents[1]
 META_DIR = BASE / "data" / "metadata"
 META_DIR.mkdir(parents=True, exist_ok=True)
 
-BSE_RESULTS_URL = "https://www.bseindia.com/corporates/Comp_Resultsnew.aspx"
+SCREENER_BASE = "https://www.screener.in"
+
 
 def write_run_log(status: str, notes: str):
     file_path = META_DIR / "runs.csv"
@@ -19,109 +21,159 @@ def write_run_log(status: str, notes: str):
         writer = csv.writer(f)
         if not exists:
             writer.writerow(["run_utc", "status", "notes"])
-        writer.writerow([datetime.now(timezone.utc).isoformat(), status, notes])
+        writer.writerow([datetime.utcnow().isoformat() + "Z", status, notes])
 
-def fetch_bse_page():
+
+def build_latest_results_url(d: date) -> str:
+    return (
+        f"{SCREENER_BASE}/results/latest/"
+        f"?result_update_date__day={d.day}"
+        f"&result_update_date__month={d.month}"
+        f"&result_update_date__year={d.year}"
+    )
+
+
+def fetch_html(url: str, session: requests.Session) -> str:
     headers = {
         "User-Agent": "Mozilla/5.0",
-        "Referer": "https://www.bseindia.com/",
+        "Referer": SCREENER_BASE,
     }
-    r = requests.get(BSE_RESULTS_URL, headers=headers, timeout=30)
+    r = session.get(url, headers=headers, timeout=30)
     r.raise_for_status()
     return r.text
 
-def save_html(html: str):
-    out = META_DIR / "bse_results_page.html"
-    out.write_text(html, encoding="utf-8")
-    return out
 
-def clean_text(text: str) -> str:
-    return re.sub(r"\s+", " ", text or "").strip()
-
-def find_nearest_row_text(tag):
-    node = tag
-    for _ in range(8):
-        if node is None:
-            break
-        text = clean_text(node.get_text(" ", strip=True))
-        if text:
-            code_match = re.search(r"\b(\d{6})\b", text)
-            if code_match:
-                return text
-        node = node.parent
-    return ""
-
-def parse_result_links(html: str):
+def extract_companies_from_latest(html: str):
+    """
+    From /results/latest/ page:
+    - find all /company/... links
+    - dedupe
+    """
     soup = BeautifulSoup(html, "lxml")
-    rows = []
     seen = set()
+    companies = []
 
     for a in soup.find_all("a", href=True):
         href = a["href"].strip()
-        href_lower = href.lower()
-
-        if not any(token in href_lower for token in ["xbrl", "xbrldetails", "pdf", "attach"]):
+        if not href.startswith("/company/"):
             continue
 
-        full_link = urljoin(BSE_RESULTS_URL, href)
-        context_text = find_nearest_row_text(a)
+        full_url = urljoin(SCREENER_BASE, href.split("?")[0])
+        name = a.get_text(" ", strip=True)
 
-        if not context_text:
-            continue
-
-        code_match = re.search(r"\b(\d{6})\b", context_text)
-        if not code_match:
-            continue
-
-        code = code_match.group(1)
-
-        company_match = re.search(r"\b\d{6}\b\s+(.*?)\s+(MQ|MC|JQ|JC|SQ|SC|DQ|DC|MH|JH|SH|DH|A|U)\b", context_text)
-        if company_match:
-            company_name = clean_text(company_match.group(1))
-        else:
-            parts = re.split(r"\b\d{6}\b", context_text, maxsplit=1)
-            company_name = clean_text(parts[1]) if len(parts) > 1 else ""
-
-            company_name = re.split(r"\b(MQ|MC|JQ|JC|SQ|SC|DQ|DC|MH|JH|SH|DH)\d{4}-\d{4}\b", company_name)[0]
-            company_name = clean_text(company_name)
-
-        if not company_name:
-            continue
-
-        key = (company_name, code, full_link)
+        key = full_url
         if key in seen:
             continue
         seen.add(key)
 
-        rows.append({
-            "company_name": company_name,
-            "code": code,
-            "result_link": full_link,
-        })
+        if not name:
+            continue
 
-    return rows
+        companies.append(
+            {
+                "company_name": name,
+                "screener_url": full_url,
+            }
+        )
 
-def write_csv(rows):
-    out = META_DIR / "bse_results.csv"
+    return companies
+
+
+def extract_latest_pdf_from_company(html: str) -> str:
+    """
+    On a company page, look for the quarterly results section and
+    try to find a link to the raw PDF.
+
+    Screener's changelog: "Added links to raw PDFs in quarterly results" [web:431].
+    Heuristic:
+    - find headings containing 'Quarterly results'
+    - search below them for <a> with 'pdf' in href or 'raw' in text
+    """
+    soup = BeautifulSoup(html, "lxml")
+    text_re = re.compile(r"quarterly results", re.I)
+
+    sections = []
+
+    # 1) find headings that mention 'Quarterly results'
+    for heading_tag in ["h2", "h3", "h4"]:
+        for h in soup.find_all(heading_tag):
+            if text_re.search(h.get_text(" ", strip=True) or ""):
+                sections.append(h.parent)
+
+    # fallback: consider entire page if section not found
+    search_roots = sections or [soup]
+
+    for root in search_roots:
+        # priority: explicit "Raw PDF" or ".pdf" links
+        for a in root.find_all("a", href=True):
+            href = a["href"].strip()
+            text = a.get_text(" ", strip=True).lower()
+
+            if ".pdf" in href.lower():
+                return urljoin(SCREENER_BASE, href)
+            if "raw" in text and "pdf" in text:
+                return urljoin(SCREENER_BASE, href)
+
+    return ""
+
+
+def write_results_csv(rows):
+    out = META_DIR / "screener_results.csv"
     with out.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["company_name", "code", "result_link"])
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["company_name", "screener_url", "result_pdf_link"],
+        )
         writer.writeheader()
         writer.writerows(rows)
     return out
 
+
 def main():
-    html = fetch_bse_page()
-    html_file = save_html(html)
-    rows = parse_result_links(html)
-    csv_file = write_csv(rows)
+    # Use today's date by default; allow override via env (YYYY-MM-DD)
+    date_str = os.getenv("SCREENER_RESULTS_DATE")
+    if date_str:
+        d = date.fromisoformat(date_str)
+    else:
+        d = date.today()
+
+    url = build_latest_results_url(d)
+
+    session = requests.Session()
+    latest_html = fetch_html(url, session)
+
+    latest_file = META_DIR / "screener_latest_results.html"
+    latest_file.write_text(latest_html, encoding="utf-8")
+
+    companies = extract_companies_from_latest(latest_html)
+
+    rows = []
+    for c in companies:
+        try:
+            company_html = fetch_html(c["screener_url"], session)
+            pdf_link = extract_latest_pdf_from_company(company_html)
+        except Exception as e:
+            pdf_link = ""
+            # optional: log per-company failure somewhere
+
+        rows.append(
+            {
+                "company_name": c["company_name"],
+                "screener_url": c["screener_url"],
+                "result_pdf_link": pdf_link,
+            }
+        )
+
+    csv_file = write_results_csv(rows)
 
     write_run_log(
         "ok",
-        f"fetched_bse_results_page bytes={len(html)} html={html_file.name} csv={csv_file.name} rows={len(rows)}"
+        f"screener_latest date={d.isoformat()} url={url} companies={len(companies)} rows={len(rows)}",
     )
 
-    print(f"Saved {html_file}")
+    print(f"Saved {latest_file}")
     print(f"Saved {csv_file} with {len(rows)} rows")
+
 
 if __name__ == "__main__":
     main()
