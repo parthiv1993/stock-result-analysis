@@ -1,11 +1,10 @@
 from pathlib import Path
 from datetime import datetime, date
-from urllib.parse import urljoin, urlparse, parse_qs
+from urllib.parse import urlencode, urljoin
 from bs4 import BeautifulSoup
 import csv
 import os
 import requests
-import re
 
 BASE = Path(__file__).resolve().parents[1]
 META_DIR = BASE / "data" / "metadata"
@@ -29,6 +28,18 @@ def write_run_log(status: str, notes: str):
 def save_text(filename: str, content: str):
     out = META_DIR / filename
     out.write_text(content, encoding="utf-8")
+    return out
+
+
+def write_results_csv(rows):
+    out = META_DIR / "screener_results.csv"
+    with out.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["company_name", "screener_url", "result_pdf_link"],
+        )
+        writer.writeheader()
+        writer.writerows(rows)
     return out
 
 
@@ -66,7 +77,13 @@ def login(session: requests.Session, email: str, password: str):
         "Origin": SCREENER_BASE,
     }
 
-    resp = session.post(LOGIN_URL, data=payload, headers=post_headers, timeout=30, allow_redirects=True)
+    resp = session.post(
+        LOGIN_URL,
+        data=payload,
+        headers=post_headers,
+        timeout=30,
+        allow_redirects=True,
+    )
     resp.raise_for_status()
     save_text("screener_login_response.html", resp.text)
 
@@ -85,13 +102,30 @@ def fetch_html(url: str, session: requests.Session) -> str:
     return r.text
 
 
-def build_date_url(d: date) -> str:
-    return (
-        f"{LATEST_RESULTS_URL}"
-        f"?result_update_date__day={d.day}"
-        f"&result_update_date__month={d.month}"
-        f"&result_update_date__year={d.year}"
-    )
+def build_results_url(d: date | None = None, use_all: bool = False, page: int | None = None) -> str:
+    params = {}
+
+    if use_all:
+        params["all"] = ""
+
+    if d:
+        params["result_update_date__day"] = d.day
+        params["result_update_date__month"] = d.month
+        params["result_update_date__year"] = d.year
+
+    if page and page > 1:
+        params["p"] = page
+
+    qs = urlencode(params)
+    return f"{LATEST_RESULTS_URL}?{qs}" if qs else LATEST_RESULTS_URL
+
+
+def normalize_company_url(href: str) -> str:
+    return urljoin(SCREENER_BASE, href.split("?")[0])
+
+
+def normalize_source_url(href: str) -> str:
+    return urljoin(SCREENER_BASE, href)
 
 
 def extract_rows_from_latest(html: str):
@@ -100,44 +134,43 @@ def extract_rows_from_latest(html: str):
     anchors = []
     for a in soup.find_all("a", href=True):
         href = a["href"].strip()
-        full = urljoin(SCREENER_BASE, href)
-
-        anchors.append({
-            "text": a.get_text(" ", strip=True),
-            "href": href,
-            "full": full,
-        })
+        text = a.get_text(" ", strip=True)
+        anchors.append({"href": href, "text": text})
 
     rows = []
+    seen_company_urls = set()
+
     i = 0
     while i < len(anchors):
-        a = anchors[i]
-        href = a["href"]
+        href = anchors[i]["href"]
+        text = anchors[i]["text"]
 
         if href.startswith("/company/") and "/source/quarter/" not in href:
-            company_name = a["text"].strip()
-            screener_url = a["full"].split("?")[0]
-            result_pdf_link = ""
+            company_url = normalize_company_url(href)
+            company_name = text.strip()
 
-            # look ahead a few anchors for the associated PDF/source link
-            for j in range(i + 1, min(i + 6, len(anchors))):
-                nxt = anchors[j]
-                if "/company/source/quarter/" in nxt["href"]:
-                    result_pdf_link = nxt["full"]
-                    break
-                # stop if next company starts
-                if nxt["href"].startswith("/company/") and "/source/quarter/" not in nxt["href"]:
-                    break
+            if company_name and company_url not in seen_company_urls:
+                result_pdf_link = ""
 
-            rows.append({
-                "company_name": company_name,
-                "screener_url": screener_url,
-                "result_pdf_link": result_pdf_link,
-            })
+                for j in range(i + 1, min(i + 10, len(anchors))):
+                    next_href = anchors[j]["href"]
+
+                    if "/company/source/quarter/" in next_href:
+                        result_pdf_link = normalize_source_url(next_href)
+                        break
+
+                    if next_href.startswith("/company/") and "/source/quarter/" not in next_href:
+                        break
+
+                rows.append({
+                    "company_name": company_name,
+                    "screener_url": company_url,
+                    "result_pdf_link": result_pdf_link,
+                })
+                seen_company_urls.add(company_url)
 
         i += 1
 
-    # dedupe
     deduped = []
     seen = set()
     for row in rows:
@@ -149,100 +182,79 @@ def extract_rows_from_latest(html: str):
     return deduped
 
 
-def extract_next_page(html: str):
-    soup = BeautifulSoup(html, "lxml")
-
-    for a in soup.find_all("a", href=True):
-        text = a.get_text(" ", strip=True).lower()
-        href = a["href"].strip()
-
-        if text in {"next", "next page", "›", "→"}:
-            return urljoin(SCREENER_BASE, href)
-
-    return None
-
-
-def write_results_csv(rows):
-    out = META_DIR / "screener_results.csv"
-    with out.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(
-            f,
-            fieldnames=["company_name", "screener_url", "result_pdf_link"],
-        )
-        writer.writeheader()
-        writer.writerows(rows)
-    return out
-
-
-def scrape_single_date(session: requests.Session, d: date):
-    url = build_date_url(d)
+def scrape_one_url(session: requests.Session, url: str, save_name: str | None = None):
     html = fetch_html(url, session)
-    save_text("screener_latest_results.html", html)
+    if save_name:
+        save_text(save_name, html)
     rows = extract_rows_from_latest(html)
-    return url, rows
+    return rows, html
 
 
-def scrape_all_pages(session: requests.Session):
-    url = LATEST_RESULTS_URL
+def scrape_all_mode(session: requests.Session, d: date | None = None):
     all_rows = []
-    visited = set()
-    page_num = 1
 
-    while url and url not in visited:
-        visited.add(url)
-        html = fetch_html(url, session)
+    all_url = build_results_url(d=d, use_all=True)
+    rows_all, html_all = scrape_one_url(session, all_url, "screener_latest_results.html")
+    all_rows.extend(rows_all)
 
-        if page_num == 1:
-            save_text("screener_latest_results.html", html)
-        else:
-            save_text(f"screener_latest_results_page_{page_num}.html", html)
+    if len(rows_all) > 0:
+        return dedupe_rows(all_rows), f"all_url={all_url}"
 
-        rows = extract_rows_from_latest(html)
-        all_rows.extend(rows)
+    page = 1
+    while True:
+        paged_url = build_results_url(d=d, use_all=False, page=page)
+        save_name = "screener_latest_results.html" if page == 1 else f"screener_latest_results_page_{page}.html"
+        rows, _ = scrape_one_url(session, paged_url, save_name)
 
-        next_url = extract_next_page(html)
-        url = next_url
-        page_num += 1
-
-        if page_num > 100:
+        if not rows:
             break
 
+        before = len(all_rows)
+        all_rows.extend(rows)
+        after = len(dedupe_rows(all_rows))
+
+        if after == len(dedupe_rows(all_rows[:before])):
+            break
+
+        page += 1
+        if page > 100:
+            break
+
+    return dedupe_rows(all_rows), f"paged_fallback last_page={page - 1}"
+
+
+def dedupe_rows(rows):
     deduped = []
     seen = set()
-    for row in all_rows:
+    for row in rows:
         key = (row["company_name"], row["screener_url"], row["result_pdf_link"])
         if key not in seen:
             seen.add(key)
             deduped.append(row)
-
     return deduped
 
 
 def main():
     email = os.getenv("SCREENER_EMAIL", "").strip()
     password = os.getenv("SCREENER_PASSWORD", "").strip()
+    date_str = os.getenv("SCREENER_RESULTS_DATE", "").strip()
 
     if not email or not password:
         raise RuntimeError("Missing SCREENER_EMAIL / SCREENER_PASSWORD")
 
-    date_str = os.getenv("SCREENER_RESULTS_DATE", "").strip()
+    d = date.fromisoformat(date_str) if date_str else None
 
     session = requests.Session()
     login(session, email, password)
 
-    if date_str:
-        d = date.fromisoformat(date_str)
-        url, rows = scrape_single_date(session, d)
-        mode = f"date={d.isoformat()} url={url}"
-    else:
-        rows = scrape_all_pages(session)
-        mode = "all_pages"
+    rows, mode_notes = scrape_all_mode(session, d=d)
 
     csv_file = write_results_csv(rows)
 
+    mode = f"date={d.isoformat()}" if d else "date=all"
     write_run_log(
         "ok",
-        f"screener_logged_in mode={mode} rows={len(rows)}"
+        f"screener_logged_in mode={mode} {mode_notes} rows={len(rows)}"
     )
 
     print(f"Saved {csv_file} with {len(rows)} rows")
