@@ -78,7 +78,7 @@ def extract_companies(html):
         pdf_a = block.select_one('a[href*="/company/source/quarter/"]')
         pdf_url = urljoin(SCREENER_BASE, pdf_a.get("href")) if pdf_a else ""
 
-        info = block.select_one(".font-size-14")
+        summary = block.select_one(".font-size-14")
         price = None
         market_cap_text = ""
         pe = None
@@ -159,13 +159,26 @@ def extract_companies(html):
 
 
 def write_csv(rows, path):
-    if not rows:
+    FIELDNAMES = [
+    "company_name",
+    "company_url",
+    "pdf_url",
+    "price",
+    "market_cap_text",
+    "market_cap_cr",
+    "pe",
+    "sales_latest_qtr_cr",
+    "sales_yoy_pct",
+    "net_profit_latest_qtr_cr",
+    "net_profit_yoy_pct",
+]
+if not rows:
         return
-
     with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        writer = csv.DictWriter(f, fieldnames=FIELDNAMES, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
+
 
 
 def write_excel(rows, path):
