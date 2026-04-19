@@ -8,6 +8,9 @@ from filters import filter_market_cap_above
 from scrape import build_latest_url, extract_companies, login
 
 
+print("Excel writer loaded from:", excel_writer.write_excel.__code__.co_filename)
+
+
 BASE_DIR = Path(__file__).resolve().parent
 OUT_DIR = BASE_DIR / "output"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
