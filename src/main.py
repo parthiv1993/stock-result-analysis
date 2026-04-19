@@ -236,7 +236,8 @@ def build_results_url(d: date | None = None) -> str:
 
 
 def normalize_company_url(href: str) -> str:
-    return urljoin(SCREENER_BASE, href.split("?")[0])
+    full = urljoin(SCREENER_BASE, href)
+    return full.split("#")[0].split("?")[0]
 
 
 def normalize_url(href: str) -> str:
@@ -284,50 +285,57 @@ def extract_rows_from_latest(html: str):
     rows = []
     seen = set()
 
-    trs = soup.find_all("tr")
-    log(f"Found {len(trs)} <tr> rows")
+    company_links = soup.select('a[href*="/company/"][href*="#quarters"]')
+    log(f"Found {len(company_links)} company links")
 
-    for tr in trs:
-        anchors = tr.find_all("a", href=True)
-
-        company_a = None
-        pdf_a = None
-
-        for a in anchors:
-            href = a.get("href", "").strip()
-            if looks_like_company_href(href) and not company_a:
-                company_a = a
-            if "/company/source/quarter/" in href and not pdf_a:
-                pdf_a = a
-
-        if not company_a:
-            continue
-
-        company_name = clean_text(company_a.get_text(" ", strip=True))
-        company_url = normalize_company_url(company_a.get("href", "").strip())
+    for a in company_links:
+        href = (a.get("href") or "").strip()
+        company_url = normalize_company_url(href)
+        company_name = clean_text(a.get_text(" ", strip=True))
 
         if not company_name or company_name.upper() == "PDF":
             continue
-
+        if "/source/quarter/" in href:
+            continue
         if company_url in seen:
             continue
-        seen.add(company_url)
 
-        row_text = clean_text(tr.get_text(" ", strip=True))
-        market_cap_text, market_cap_cr = extract_market_cap_from_text(row_text)
+        block = a.find_parent("div", class_=lambda c: c and "flex-row" in c)
+        if not block:
+            block = a.parent
 
-        result_pdf_link = ""
-        if pdf_a:
-            result_pdf_link = normalize_url(pdf_a.get("href", "").strip())
+        block_text = clean_text(block.get_text(" ", strip=True)) if block else ""
 
-        row = {
+        pdf_a = None
+        if block:
+            pdf_a = block.select_one('a[href*="/company/source/quarter/"]')
+
+        market_cap_text = ""
+        market_cap_cr = None
+
+        mcap_container = None
+        if block:
+            mcap_container = block.find(attrs={"data-mcap": True})
+
+        if mcap_container:
+            strong = mcap_container.find("strong")
+            strong_text = clean_text(strong.get_text(" ", strip=True)) if strong else ""
+            market_cap_text = f"{strong_text} Cr" if strong_text else ""
+            market_cap_cr = parse_market_cap_to_cr(market_cap_text)
+
+        if market_cap_cr is None:
+            market_cap_text, market_cap_cr = extract_market_cap_from_text(block_text)
+
+        result_pdf_link = normalize_url(pdf_a.get("href")) if pdf_a else ""
+
+        rows.append({
             "company_name": company_name,
             "screener_url": company_url,
             "market_cap_text": market_cap_text,
             "market_cap_cr": market_cap_cr,
             "result_pdf_link": result_pdf_link,
-        }
-        rows.append(row)
+        })
+        seen.add(company_url)
 
     return rows
 
