@@ -20,13 +20,22 @@ def parse_market_cap_cr(value):
         return num / 100.0
     if "bn" in lower or "billion" in lower:
         return num * 100.0
-    return num
+    if "cr" in lower or "crore" in lower:
+        return num
+
+    return None
 
 
 def filter_market_cap_above(rows, min_cr):
     out = []
     for row in rows:
         mc = row.get("market_cap_cr")
+
+        if mc is None:
+            mc = parse_market_cap_cr(row.get("market_cap_text"))
+
         if mc is not None and mc > min_cr:
+            row["market_cap_cr"] = mc
             out.append(row)
+
     return out

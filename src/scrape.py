@@ -4,6 +4,7 @@ from urllib.parse import urlencode, urljoin
 
 from filters import parse_market_cap_cr
 
+
 SCREENER_BASE = "https://www.screener.in"
 LOGIN_URL = f"{SCREENER_BASE}/login/"
 LATEST_RESULTS_URL = f"{SCREENER_BASE}/results/latest/"
@@ -50,47 +51,69 @@ def build_latest_url(result_date=None):
     return f"{LATEST_RESULTS_URL}?{urlencode(params)}"
 
 
+def _to_float(text):
+    if text is None:
+        return None
+    s = text.strip().replace(",", "").replace("%", "")
+    if not s or s.lower() == "none":
+        return None
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+
 def extract_companies(html):
     soup = BeautifulSoup(html, "html.parser")
-    blocks = soup.select("main .margin-top-32")
     rows = []
 
-    for block in blocks:
-        company_a = block.select_one('a[href*="/company/"][href*="quarters"]')
+    headers = soup.select(
+        "main div.flex-row.flex-space-between.flex-align-center.margin-top-32"
+    )
+
+    for header in headers:
+        company_a = header.select_one('a[href*="/company/"][href*="quarters"]')
         if not company_a:
             continue
 
         company_name = company_a.get_text(" ", strip=True)
-        company_url = urljoin(SCREENER_BASE, company_a.get("href", "").split("?")[0])
+        screener_url = urljoin(
+            SCREENER_BASE,
+            company_a.get("href", "").split("?")[0].replace("quarters", "").rstrip("/"),
+        )
 
-        pdf_a = block.select_one('a[href*="/company/source/quarter/"]')
-        pdf_url = urljoin(SCREENER_BASE, pdf_a.get("href")) if pdf_a else ""
+        pdf_a = header.select_one('a[href*="/company/source/quarter/"]')
+        result_pdf_link = urljoin(SCREENER_BASE, pdf_a.get("href")) if pdf_a else ""
 
-        summary = block.select_one(".font-size-14")
+        meta = header.find_next_sibling("div")
         price = None
         market_cap_text = ""
         pe = None
 
-        if summary:
-            spans = [x.get_text(" ", strip=True) for x in summary.find_all("span")]
-            for i, txt in enumerate(spans):
-                t = txt.lower()
-                if t == "price" and i + 1 < len(spans):
-                    try:
-                        price = float(spans[i + 1].replace(",", ""))
-                    except Exception:
-                        price = None
-                elif "m.cap" in t and i + 1 < len(spans):
-                    market_cap_text = spans[i + 1]
-                elif t == "pe" and i + 1 < len(spans):
-                    try:
-                        pe = float(spans[i + 1].replace(",", ""))
-                    except Exception:
-                        pe = None
+        if meta and "font-size-14" in (meta.get("class") or []):
+            strongs = meta.find_all("span", class_="strong")
+
+            price_label = meta.find("span", string=lambda s: s and s.strip().lower() == "price")
+            if price_label:
+                strong = price_label.find_next("span", class_="strong")
+                price = _to_float(strong.get_text(" ", strip=True) if strong else None)
+
+            mcap_label = meta.find("span", attrs={"data-mcap": True})
+            if mcap_label:
+                strong = mcap_label.find_next("span", class_="strong")
+                if strong:
+                    market_cap_text = f"{strong.get_text(' ', strip=True)} Cr"
+
+            pe_label = meta.find("span", string=lambda s: s and s.strip().lower() == "pe")
+            if pe_label:
+                strong = pe_label.find_next("span", class_="strong")
+                pe = _to_float(strong.get_text(" ", strip=True) if strong else None)
 
         market_cap_cr = parse_market_cap_cr(market_cap_text)
 
-        table = block.find_next("table")
+        table_wrap = meta.find_next_sibling("div") if meta else None
+        table = table_wrap.find("table") if table_wrap else None
+
         sales_latest = None
         sales_yoy = None
         np_latest = None
@@ -100,39 +123,27 @@ def extract_companies(html):
             sales_row = table.select_one("tr[data-sales]")
             if sales_row:
                 sales_latest_td = sales_row.select_one("td[data-sales-latest-quarter]")
-                if sales_latest_td:
-                    try:
-                        sales_latest = float(sales_latest_td.get_text(strip=True).replace(",", ""))
-                    except Exception:
-                        sales_latest = None
+                sales_latest = _to_float(
+                    sales_latest_td.get_text(" ", strip=True) if sales_latest_td else None
+                )
                 tds = sales_row.find_all("td")
                 if len(tds) >= 2:
-                    yoy_text = tds[1].get_text(" ", strip=True).replace("%", "").replace(",", "")
-                    try:
-                        sales_yoy = float(yoy_text)
-                    except Exception:
-                        sales_yoy = None
+                    sales_yoy = _to_float(tds[1].get_text(" ", strip=True))
 
             np_row = table.select_one("tr[data-net-profit]")
             if np_row:
                 np_latest_td = np_row.select_one("td[data-np-latest-quarter]")
-                if np_latest_td:
-                    try:
-                        np_latest = float(np_latest_td.get_text(strip=True).replace(",", ""))
-                    except Exception:
-                        np_latest = None
+                np_latest = _to_float(
+                    np_latest_td.get_text(" ", strip=True) if np_latest_td else None
+                )
                 tds = np_row.find_all("td")
                 if len(tds) >= 2:
-                    yoy_text = tds[1].get_text(" ", strip=True).replace("%", "").replace(",", "")
-                    try:
-                        np_yoy = float(yoy_text)
-                    except Exception:
-                        np_yoy = None
+                    np_yoy = _to_float(tds[1].get_text(" ", strip=True))
 
         rows.append({
             "company_name": company_name,
-            "company_url": company_url,
-            "pdf_url": pdf_url,
+            "screener_url": screener_url,
+            "result_pdf_link": result_pdf_link,
             "price": price,
             "market_cap_text": market_cap_text,
             "market_cap_cr": market_cap_cr,
