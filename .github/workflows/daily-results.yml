@@ -32,12 +32,11 @@ jobs:
         env:
           SCREENER_EMAIL: ${{ secrets.SCREENER_EMAIL }}
           SCREENER_PASSWORD: ${{ secrets.SCREENER_PASSWORD }}
-          
           SCREENER_RESULTS_DATE: ${{ vars.SCREENER_RESULTS_DATE }}
 
-      - name: Upload metadata artifact
+      - name: Upload scraper outputs
         uses: actions/upload-artifact@v4
         with:
-          name: result-metadata
+          name: screener-output
           path: data/metadata/
-          if-no-files-found: warn
+          if-no-files-found: error
