@@ -3,12 +3,12 @@ from pathlib import Path
 
 import requests
 
+import excel_writer  # ← ADD THIS
+print("Excel writer loaded from:", excel_writer.write_excel.__code__.co_filename)  # ← ADD THIS
+
 from excel_writer import write_csv, write_excel
 from filters import filter_market_cap_above
 from scrape import build_latest_url, extract_companies, login
-
-
-print("Excel writer loaded from:", excel_writer.write_excel.__code__.co_filename)
 
 
 BASE_DIR = Path(__file__).resolve().parent
