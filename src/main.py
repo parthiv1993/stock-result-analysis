@@ -38,7 +38,7 @@ def main():
 
     write_csv(all_rows, OUT_DIR / "all_results.csv")
     write_csv(filtered_rows, OUT_DIR / "filtered_results_mcap_above_500cr.csv")
-    write_excel(filtered_rows, OUT_DIR / "filtered_results_mcap_above_500cr.xlsx")
+
 
     print(f"All rows: {len(all_rows)}")
     print(f"Filtered rows (>500 Cr): {len(filtered_rows)}")
