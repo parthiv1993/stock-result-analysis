@@ -226,16 +226,21 @@ def _extract_qtr_metrics(details_div):
             return None
 
         yoy_text = tds[1].get_text(" ", strip=True)
-        m = re.search(r"(-?[\d,]+(?:\.\d+)?)\s*%", yoy_text)
-        if m:
-            return _to_float(m.group(1))
 
-        # fallback: first number in cell
-        m = re.search(r"(-?[\d,]+(?:\.\d+)?)", yoy_text)
-        if m:
-            return _to_float(m.group(1))
+        m = re.search(r"([\d,]+(?:\.\d+)?)\s*%", yoy_text)
+        if not m:
+            m = re.search(r"([\d,]+(?:\.\d+)?)", yoy_text)
+        if not m:
+            return None
 
-        return None
+        val = _to_float(m.group(1))
+        if val is None:
+            return None
+
+        if "⇣" in yoy_text:
+            return -val
+
+        return val
 
     sales_row = table.select_one("tr[data-sales]")
     if sales_row:

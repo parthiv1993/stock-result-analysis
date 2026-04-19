@@ -1,6 +1,5 @@
 import re
 
-
 def parse_market_cap_cr(value):
     if value is None:
         return None
@@ -26,16 +25,51 @@ def parse_market_cap_cr(value):
     return None
 
 
+def _to_float_or_none(value):
+    if value is None:
+        return None
+    s = str(value).strip().replace(",", "")
+    if not s or s == "-" or s.lower() == "nan":
+        return None
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+
 def filter_market_cap_above(rows, min_cr):
     out = []
+
     for row in rows:
         mc = row.get("market_cap_cr")
-
         if mc is None:
             mc = parse_market_cap_cr(row.get("market_cap_text"))
 
-        if mc is not None and mc > min_cr:
-            row["market_cap_cr"] = mc
-            out.append(row)
+        pe = _to_float_or_none(row.get("pe"))
+        sales_yoy = _to_float_or_none(row.get("sales_yoy_pct"))
+        profit_yoy = _to_float_or_none(row.get("net_profit_yoy_pct"))
+        latest_profit = _to_float_or_none(row.get("net_profit_latest_qtr_cr"))
+
+        if mc is None or mc <= min_cr:
+            continue
+
+        if latest_profit is None or latest_profit <= 0:
+            continue
+
+        if sales_yoy is None or sales_yoy <= 10:
+            continue
+
+        if profit_yoy is None or profit_yoy <= 10:
+            continue
+
+        if pe is not None and pe >= 100:
+            continue
+
+        row["market_cap_cr"] = mc
+        row["pe"] = pe
+        row["sales_yoy_pct"] = sales_yoy
+        row["net_profit_yoy_pct"] = profit_yoy
+        row["net_profit_latest_qtr_cr"] = latest_profit
+        out.append(row)
 
     return out
