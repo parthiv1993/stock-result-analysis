@@ -5,6 +5,8 @@ on:
   push:
     branches:
       - main
+    paths-ignore:
+      - 'data/**'
   schedule:
     - cron: '17 15 * * *'
 
@@ -12,10 +14,14 @@ jobs:
   download-results:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -25,7 +31,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          python -m pip install -r requirements.txt
 
       - name: Run Screener latest results scraper
         run: python src/main.py
@@ -33,26 +39,21 @@ jobs:
           SCREENER_EMAIL: ${{ secrets.SCREENER_EMAIL }}
           SCREENER_PASSWORD: ${{ secrets.SCREENER_PASSWORD }}
           SCREENER_RESULTS_DATE: ${{ vars.SCREENER_RESULTS_DATE }}
-          
-      - name: Debug paths
-        run: |
-          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
-          pwd
-          python - <<'PY'
-          from pathlib import Path
-          p = Path("src/main.py").resolve()
-          print("main.py =", p)
-          print("parent =", p.parent)
-          print("parents[1] =", p.parents[1])
-          print("workspace files:")
-          for x in Path(".").glob("**/*"):
-              if x.is_file():
-                  print(x)
-          PY
 
       - name: Upload scraper outputs
         uses: actions/upload-artifact@v4
         with:
-          name: screener-output
-          path: data/metadata/
+          name: screener-output-${{ github.run_number }}
+          path: |
+            data/**/*.csv
+            data/**/*.xlsx
+            data/metadata/**/*.html
+            data/metadata/**/*.txt
           if-no-files-found: error
+          overwrite: true
+
+      - name: Commit generated data files
+        uses: stefanzweifel/git-auto-commit-action@v7
+        with:
+          commit_message: "Update screener result files [skip ci]"
+          file_pattern: data/*.csv data/*.xlsx

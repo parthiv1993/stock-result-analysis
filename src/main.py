@@ -28,8 +28,11 @@ MIN_MARKET_CAP_CR = 500
 
 
 BASE = Path.cwd()
-META_DIR = BASE / "data" / "metadata"
+DATA_DIR = BASE / "data"
+META_DIR = DATA_DIR / "metadata"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 META_DIR.mkdir(parents=True, exist_ok=True)
+
 
 DEBUG_FILE = META_DIR / "debug.txt"
 
@@ -56,8 +59,8 @@ def save_text(filename: str, content: str):
     return out
 
 
-def write_results_csv(rows, filename: str):
-    out = META_DIR / filename
+def write_results_csv(rows, filename: str, folder: Path):
+    out = folder / filename
     with out.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(
             f,
@@ -79,7 +82,7 @@ def write_results_xlsx(rows, filename: str):
         log("openpyxl not available, skipping xlsx generation")
         return None
 
-    out = META_DIR / filename
+    out = DATA_DIR / filename
 
     wb = Workbook()
     ws = wb.active
@@ -379,13 +382,13 @@ def main():
     if rows:
         log(f"Sample row = {rows[0]}")
 
-    all_csv = write_results_csv(rows, "screener_results_all.csv")
+    all_csv = write_results_csv(rows, "screener_results_all.csv", DATA_DIR)
     log(f"Wrote CSV = {all_csv}")
 
     filtered_rows = market_cap_above(rows, MIN_MARKET_CAP_CR)
     log(f"Filtered rows (market_cap > {MIN_MARKET_CAP_CR} Cr) = {len(filtered_rows)}")
 
-    filtered_csv = write_results_csv(filtered_rows, "screener_results_filtered.csv")
+    filtered_csv = write_results_csv(filtered_rows, "screener_results_filtered.csv", DATA_DIR)
     log(f"Wrote filtered CSV = {filtered_csv}")
 
     xlsx_file = write_results_xlsx(filtered_rows, "screener_results_filtered.xlsx")
